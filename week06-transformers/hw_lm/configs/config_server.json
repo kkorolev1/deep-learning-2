@@ -1,0 +1,72 @@
+{
+  "name": "default_config",
+  "n_gpu": 0,
+  "arch": {
+    "type": "HuYaLM",
+    "args": {
+      "vocab_size": 32000,
+      "d_model": 512,
+      "nhead": 8,
+      "num_layers": 6
+    }
+  },
+  "data": {
+    "train": {
+      "batch_size": 3,
+      "num_workers": 5,
+      "datasets": [
+        {
+          "type": "TinyStoriesDataset",
+          "args": {
+            "data_dir": "tokenized_data",
+            "tokenizer_model_path": "lm.model"
+          }
+        }
+      ]
+    }
+  },
+  "optimizer": {
+    "type": "AdamW",
+    "args": {
+      "lr": 1e-3,
+      "weight_decay": 1e-5
+    }
+  },
+  "loss": {
+    "type": "CrossEntropyLoss",
+    "args": {
+    }
+  },
+  "metrics": [
+  ],
+  "lr_scheduler": {
+    "type": "ReduceLROnPlateau",
+    "args": {
+      "mode": "min",
+      "factor": 0.5,
+      "patience": 2,
+      "min_lr": 0.0,
+      "verbose": true
+    }
+  },
+  "trainer": {
+    "epochs": 40,
+    "save_dir": "saved/",
+    "save_period": 5,
+    "verbosity": 2,
+    "monitor": "min val_loss",
+    "early_stop": 100,
+    "visualize": "wandb",
+    "wandb_project": "lm_project",
+    "wandb_run_name": "one_batch_test",
+    "len_epoch": 1,
+    "grad_norm_clip": 100,
+    "fine_tune": false,
+    "scheduler": {
+      "requires_loss": false,
+      "epoch_based": false
+    },
+    "grad_accum_iters": 1,
+    "eval_start_iter": 0
+  }
+}
