@@ -142,7 +142,7 @@ class BaseTrainer:
             "monitor_best": self.mnt_best,
             "config": self.config,
         }
-        if hasattr(self, "lr_scheduler"):
+        if self.lr_scheduler is not None:
             state.update({'lr_scheduler': self.lr_scheduler.state_dict()})
         filename = str(self.checkpoint_dir / "checkpoint-epoch{}.pth".format(epoch))
         if not (only_best and save_best):

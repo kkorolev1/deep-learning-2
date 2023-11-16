@@ -35,7 +35,7 @@ class TinyStoriesDataset:
                 batch_first=True,
                 padding_value=pad_id
             )
-            result_batch["padding_mask"] = (result_batch["input_ids"] != pad_id)
+            result_batch["padding_mask"] = (result_batch["input_ids"] == pad_id)
             return result_batch
         return collate_fn
 

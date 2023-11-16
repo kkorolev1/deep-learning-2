@@ -52,9 +52,12 @@ class Trainer(BaseTrainer):
             "loss", *[m.name for m in self.metrics], writer=self.writer
         )
         self.fine_tune = config["trainer"].get("fine_tune", False)
-        self.scheduler_config = config["trainer"].get("scheduler", None)
         self.grad_accum_iters = config["trainer"].get("grad_accum_iters", 1)
-        self.eval_start_iter = config["trainer"].get("eval_start_iter", 10000)
+        self.eval_start_iter = config["trainer"].get("eval_start_iter", 0)
+        self.scheduler_config = config["trainer"].get("scheduler", None)
+        if self.scheduler_config is not None:
+            self.scheduler_config["requires_loss"] = self.scheduler_config.get("requires_loss", False)
+            self.scheduler_config["epoch_based"] = self.scheduler_config.get("epoch_based", False)
 
         if config.resume is not None:
             self._resume_checkpoint(config.resume)
@@ -82,7 +85,7 @@ class Trainer(BaseTrainer):
         # load optimizer state from checkpoint only when optimizer type is not changed.
         if (
                 checkpoint["config"]["optimizer"] != self.config["optimizer"] or
-                checkpoint["config"]["lr_scheduler"] != self.config["lr_scheduler"]
+                (self.lr_scheduler is not None and checkpoint["config"]["lr_scheduler"] != self.config["lr_scheduler"])
         ):
             self.logger.warning(
                 "Warning: Optimizer or lr_scheduler given in config file is different "
@@ -90,7 +93,8 @@ class Trainer(BaseTrainer):
             )
         elif not self.fine_tune:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
-            self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
 
         self.logger.info(
             "Checkpoint loaded. Resume training from epoch {}".format(self.start_epoch)
@@ -148,9 +152,10 @@ class Trainer(BaseTrainer):
                         epoch, self._progress(batch_idx), batch["loss"].item()
                     )
                 )
-                self.writer.add_scalar(
-                    "learning rate", self.lr_scheduler.get_last_lr()[0]
-                )
+                if self.lr_scheduler is not None:
+                    self.writer.add_scalar(
+                        "learning rate", self.lr_scheduler.get_last_lr()[0]
+                    )
                 self._log_predictions(**batch, is_train=True)
                 self._log_scalars(self.train_metrics)
                 # we don't want to reset train metrics at the start of every epoch
@@ -166,8 +171,8 @@ class Trainer(BaseTrainer):
                 val_log = self._evaluation_epoch(epoch, part, dataloader)
                 log.update(**{f"{part}_{name}": value for name, value in val_log.items()})
 
-        if self.lr_scheduler is not None and self.scheduler_config.get("epoch_based", False):
-            if self.scheduler_config.get("requires_loss", True):
+        if self.lr_scheduler is not None and self.scheduler_config is not None and self.scheduler_config["epoch_based"]:
+            if self.scheduler_config["requires_loss"]:
                 if "val_loss" in log:
                     self.lr_scheduler.step(log["val_loss"])
             else:
@@ -179,13 +184,13 @@ class Trainer(BaseTrainer):
         batch = self.move_batch_to_device(batch, self.device)
         outputs = self.model(**batch)
         batch.update(outputs)
-        batch["loss"] = self.criterion(is_train, **batch) / self.grad_accum_iters
+        batch["loss"] = self.criterion(**batch) / self.grad_accum_iters
         if is_train:
             batch["loss"].backward()
             if (batch_idx + 1) % self.grad_accum_iters == 0 or (batch_idx + 1) == self.len_epoch:
                 self._clip_grad_norm()
                 self.optimizer.step()
-                if self.lr_scheduler is not None and not self.scheduler_config.get("epoch_based", False):
+                if self.lr_scheduler is not None and self.scheduler_config is not None and not self.scheduler_config["epoch_based"]:
                     self.lr_scheduler.step()
                 self.train_metrics.update("grad norm", self.get_grad_norm())
                 self.optimizer.zero_grad()

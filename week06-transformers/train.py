@@ -53,8 +53,10 @@ def main(config):
     # disabling scheduler
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = config.init_obj(config["optimizer"], torch.optim, trainable_params)
-    lr_scheduler = config.init_obj(config["lr_scheduler"], hw_lm.utils.lr_scheduler, optimizer)
-
+    if "lr_scheduler" in config.config:
+        lr_scheduler = config.init_obj(config["lr_scheduler"], hw_lm.utils.lr_scheduler, optimizer)
+    else:
+        lr_scheduler = None
     trainer = Trainer(
         model,
         loss_module,

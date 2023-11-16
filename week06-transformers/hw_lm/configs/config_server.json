@@ -28,27 +28,17 @@
   "optimizer": {
     "type": "AdamW",
     "args": {
-      "lr": 1e-3,
-      "weight_decay": 1e-5
+      "lr": 3e-4
     }
   },
   "loss": {
     "type": "CrossEntropyLoss",
     "args": {
+      "pad_id": 0
     }
   },
   "metrics": [
   ],
-  "lr_scheduler": {
-    "type": "ReduceLROnPlateau",
-    "args": {
-      "mode": "min",
-      "factor": 0.5,
-      "patience": 2,
-      "min_lr": 0.0,
-      "verbose": true
-    }
-  },
   "trainer": {
     "epochs": 40,
     "save_dir": "saved/",
@@ -60,13 +50,6 @@
     "wandb_project": "lm_project",
     "wandb_run_name": "one_batch_test",
     "len_epoch": 1,
-    "grad_norm_clip": 100,
-    "fine_tune": false,
-    "scheduler": {
-      "requires_loss": false,
-      "epoch_based": false
-    },
-    "grad_accum_iters": 1,
-    "eval_start_iter": 0
+    "grad_norm_clip": 100
   }
 }
