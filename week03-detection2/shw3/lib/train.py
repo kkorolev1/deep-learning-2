@@ -5,6 +5,7 @@ import os
 import shutil
 import torch
 import torch.optim as optim
+import matplotlib.pyplot as plt
 from torchvision import transforms
 
 
@@ -136,7 +137,7 @@ def inference_with_detector(
                     test_score_thresh=score_thresh,
                     test_nms_thresh=nms_thresh,
                 )
-                print(pred_boxes, pred_classes, pred_scores)
+                #print(pred_boxes, pred_classes, pred_scores)
 
         # Skip current iteration if no predictions were found.
         if pred_boxes.shape[0] == 0:

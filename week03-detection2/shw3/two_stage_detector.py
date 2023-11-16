@@ -60,9 +60,19 @@ class RPNPredictionNetwork(nn.Module):
         # Fill this list. It is okay to use your implementation from
         # `FCOSPredictionNetwork` for this code block.
         stem_rpn = []
+        in_channels_ = in_channels
+        for i in range(1, len(stem_channels) + 1):
+            stem_rpn.append(
+                nn.Conv2d(in_channels=in_channels_, out_channels=stem_channels[i - 1], kernel_size=3, padding=1)
+            )
+            stem_rpn.append(nn.ReLU())
+            in_channels_ = stem_channels[i - 1]
         # Replace "pass" statement with your code
 
-        pass
+        for layer in stem_rpn:
+            if isinstance(layer, nn.Conv2d):
+                torch.nn.init.normal_(layer.weight.data, mean=0, std=0.01)
+                torch.nn.init.zeros_(layer.bias.data)
 
         # Wrap the layers defined by student into a `nn.Sequential` module:
         self.stem_rpn = nn.Sequential(*stem_rpn)
@@ -76,11 +86,15 @@ class RPNPredictionNetwork(nn.Module):
         ######################################################################
 
         # Replace these lines with your code, keep variable names unchanged.
-        self.pred_obj = None  # Objectness conv
-        self.pred_box = None  # Box regression conv
+        self.pred_obj = nn.Conv2d(in_channels=stem_channels[-1], out_channels=num_anchors, kernel_size=1)  # Objectness conv
+        self.pred_box = nn.Conv2d(in_channels=stem_channels[-1], out_channels=4*num_anchors, kernel_size=1)  # Box regression conv
 
+        torch.nn.init.normal_(self.pred_obj.weight.data, mean=0, std=0.01)
+        torch.nn.init.zeros_(self.pred_obj.bias.data)
+
+        torch.nn.init.normal_(self.pred_box.weight.data, mean=0, std=0.01)
+        torch.nn.init.zeros_(self.pred_box.bias.data)
         # Replace "pass" statement with your code
-        pass
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -112,7 +126,16 @@ class RPNPredictionNetwork(nn.Module):
         boxreg_deltas = {}
 
         # Replace "pass" statement with your code
-        pass
+        for key, fpn_level in feats_per_fpn_level.items():
+            stem_out = self.stem_rpn(fpn_level)
+
+            object_logits[key] = torch.flatten(self.pred_obj(stem_out), start_dim=1)
+            boxreg_deltas[key] = torch.flatten(
+                self.pred_box(stem_out)
+                    .permute(0, 2, 3, 1)
+                    .view(fpn_level.shape[0], fpn_level.shape[2], fpn_level.shape[3], self.num_anchors, 4),
+                start_dim=1, end_dim=3
+            )
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -178,7 +201,20 @@ def generate_fpn_anchors(
             # locations to get top-left and bottom-right co-ordinates.
             ##################################################################
             # Replace "pass" statement with your code
-            pass
+            area = (level_stride * stride_scale) ** 2
+            anchor_width = math.sqrt(area / aspect_ratio)
+            anchor_height = area / anchor_width
+            
+            yc = locations[:, 0]
+            xc = locations[:, 1]
+            
+            left = xc - anchor_width / 2
+            top = yc - anchor_height / 2
+            right = xc + anchor_width / 2
+            bottom = yc + anchor_height / 2
+
+            anchor = torch.stack((left, top, right, bottom), dim=1)
+            anchor_boxes.append(anchor)
             ##################################################################
             #                           END OF YOUR CODE                     #
             ##################################################################
@@ -212,7 +248,26 @@ def iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     # TODO: Implement the IoU function here.                                 #
     ##########################################################################
     # Replace "pass" statement with your code
-    pass
+    
+    # max(a, b) = (|a-b| + a + b) / 2
+    # min(a, b) = (b + a - |a-b|) / 2
+
+    abs_diff = torch.abs(boxes1.unsqueeze(1) - boxes2.unsqueeze(0))
+    maximums = (abs_diff + boxes1.unsqueeze(1) + boxes2.unsqueeze(0)) / 2
+    minimums = (-abs_diff + boxes1.unsqueeze(1) + boxes2.unsqueeze(0)) / 2
+
+    widths = minimums[..., 2] - maximums[..., 0]
+    heights = minimums[..., 3] - maximums[..., 1]
+
+    widths = torch.maximum(widths, torch.zeros_like(widths))
+    heights = torch.maximum(heights, torch.zeros_like(heights))
+    
+    intersection_areas = widths * heights
+    areas1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1]) 
+    areas2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1]) 
+    union_areas = areas1.unsqueeze(1) + areas2.unsqueeze(0) - intersection_areas
+
+    iou = intersection_areas / union_areas
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -297,9 +352,29 @@ def rcnn_get_deltas_from_anchors(
     # TODO: Implement the logic to get deltas.                               #
     # Remember to set the deltas of "background/neutral" GT boxes to -1e8    #
     ##########################################################################
-    deltas = None
-    # Replace "pass" statement with your code
-    pass
+    bg_mask = gt_boxes[:, 0] == -1
+    
+    anchors_widths = anchors[:, 2] - anchors[:, 0]
+    anchors_heights = anchors[:, 3] - anchors[:, 1]
+    
+    anchor_xc = (anchors[:, 0] + anchors[:, 2]) / 2
+    anchor_yc = (anchors[:, 1] + anchors[:, 3]) / 2
+
+    gt_widths = gt_boxes[:, 2] - gt_boxes[:, 0]
+    gt_heights = gt_boxes[:, 3] - gt_boxes[:, 1]
+
+    gt_xc = (gt_boxes[:, 0] + gt_boxes[:, 2]) / 2
+    gt_yc = (gt_boxes[:, 1] + gt_boxes[:, 3]) / 2
+
+    deltas_x = (gt_xc - anchor_xc) / anchors_widths
+    deltas_y = (gt_yc - anchor_yc) / anchors_heights
+    deltas_w = torch.log(gt_widths / anchors_widths)
+    deltas_h = torch.log(gt_heights / anchors_heights)
+    deltas = torch.stack((deltas_x, deltas_y, deltas_w, deltas_h), dim=1)
+
+    deltas[bg_mask] = -1e-8
+    torch.nan_to_num_(deltas, -1e8)
+    
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -332,9 +407,27 @@ def rcnn_apply_deltas_to_anchors(
     ##########################################################################
     # TODO: Implement the transformation logic to get output boxes.          #
     ##########################################################################
-    output_boxes = None
-    # Replace "pass" statement with your code
-    pass
+    bg_mask = deltas[:, 0] == -1e-8
+
+    anchors_widths = anchors[:, 2] - anchors[:, 0]
+    anchors_heights = anchors[:, 3] - anchors[:, 1]
+    
+    anchor_xc = (anchors[:, 0] + anchors[:, 2]) / 2
+    anchor_yc = (anchors[:, 1] + anchors[:, 3]) / 2
+
+    boxes_xc = anchor_xc + anchors_widths * deltas[:, 0]
+    boxes_yc = anchor_yc + anchors_heights * deltas[:, 1]
+    boxes_width = anchors_widths * torch.exp(deltas[:, 2])
+    boxes_height = anchors_heights * torch.exp(deltas[:, 3])
+
+    boxes_left = boxes_xc - boxes_width / 2
+    boxes_top = boxes_yc - boxes_height / 2
+    boxes_right = boxes_xc + boxes_width / 2
+    boxes_bottom = boxes_yc + boxes_height / 2
+
+    output_boxes = torch.stack((boxes_left, boxes_top, boxes_right, boxes_bottom), dim=1)
+
+    output_boxes[bg_mask] = -1e-8
     ##########################################################################
     #                             END OF YOUR CODE                           #
     ##########################################################################
@@ -542,13 +635,22 @@ class RPN(nn.Module):
         # appropriate functions.
         ######################################################################
         # Feel free to delete this line: (but keep variable names same)
-        pred_obj_logits, pred_boxreg_deltas, anchors_per_fpn_level = (
-            None,
-            None,
-            None,
+        pred_obj_logits, pred_boxreg_deltas = self.pred_net(feats_per_fpn_level)
+        
+        shape_per_fpn_level = {key:value.shape for key, value in feats_per_fpn_level.items()}
+        locations_per_fpn_level = get_fpn_location_coords(
+            shape_per_fpn_level,
+            strides_per_fpn_level,
+            dtype=torch.float,
+            device=feats_per_fpn_level["p3"].device
         )
-        # Replace "pass" statement with your code
-        pass
+        anchors_per_fpn_level = generate_fpn_anchors(
+            locations_per_fpn_level,
+            strides_per_fpn_level,
+            self.anchor_stride_scale,
+            self.anchor_aspect_ratios
+        )
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -588,7 +690,13 @@ class RPN(nn.Module):
         # giving matching GT boxes to anchor boxes). Fill this list:
         matched_gt_boxes = []
         # Replace "pass" statement with your code
-        pass
+        
+        for _batch_idx in range(len(gt_boxes)):
+            matched_gt_boxes.append(
+                rcnn_match_anchors_to_gt(
+                    anchor_boxes, gt_boxes[_batch_idx], self.anchor_iou_thresholds
+                )
+            )
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -627,9 +735,24 @@ class RPN(nn.Module):
             #      Remember to set box loss for "background" anchors to 0.
             ##################################################################
             # Feel free to delete this line: (but keep variable names same)
-            loss_obj, loss_box = None, None
-            # Replace "pass" statement with your code
-            pass
+            fg_idx, bg_idx = sample_rpn_training(matched_gt_boxes, num_images * self.batch_size_per_image, 0.5)
+            
+            sampled_anchor_boxes = torch.cat((anchor_boxes[fg_idx], anchor_boxes[bg_idx]), dim=0)
+            sampled_matched_gt_boxes = torch.cat((matched_gt_boxes[fg_idx], matched_gt_boxes[bg_idx]), dim=0)
+            sampled_gt_deltas = rcnn_get_deltas_from_anchors(
+                sampled_anchor_boxes, sampled_matched_gt_boxes
+            )
+            sampled_pred_boxreg_deltas = torch.cat((pred_boxreg_deltas[fg_idx], pred_boxreg_deltas[bg_idx]), dim=0)
+
+            loss_box = F.l1_loss(sampled_pred_boxreg_deltas, sampled_gt_deltas, reduction="none")
+            loss_box[sampled_gt_deltas == -1e-8] *= 0.0
+
+            sampled_pred_obj_logits = torch.cat((pred_obj_logits[fg_idx], pred_obj_logits[bg_idx]), dim=0)
+            gt_objectness = torch.zeros((len(sampled_pred_obj_logits)), dtype=torch.float, device=sampled_pred_obj_logits.device)
+            gt_objectness[:len(fg_idx)] = 1.0
+            loss_obj = F.binary_cross_entropy_with_logits(
+                sampled_pred_obj_logits, gt_objectness, reduction="none"
+            )
             ##################################################################
             #                         END OF YOUR CODE                       #
             ##################################################################
@@ -713,7 +836,28 @@ class RPN(nn.Module):
                 # separately; you will NOT lose points if you don't use it here.
                 ##############################################################
                 # Replace "pass" statement with your code
-                pass
+                proposal_boxes_per_level = rcnn_apply_deltas_to_anchors(
+                    level_boxreg_deltas, level_anchors
+                )
+                proposal_boxes_per_level[:, 0] = torch.clip(proposal_boxes_per_level[:, 0], min=0, max=image_size[0])
+                proposal_boxes_per_level[:, 1] = torch.clip(proposal_boxes_per_level[:, 1], min=0, max=image_size[1])
+                proposal_boxes_per_level[:, 2] = torch.clip(proposal_boxes_per_level[:, 2], min=0, max=image_size[0])
+                proposal_boxes_per_level[:, 3] = torch.clip(proposal_boxes_per_level[:, 3], min=0, max=image_size[1])
+
+                level_obj_logits, proposals_indices_per_level = torch.topk(
+                    level_obj_logits, min(len(level_obj_logits), self.pre_nms_topk)
+                )
+                
+                proposal_boxes_per_level = proposal_boxes_per_level[proposals_indices_per_level]
+                nms_indices = torchvision.ops.nms(
+                    proposal_boxes_per_level, level_obj_logits, self.nms_thresh
+                )
+
+                proposal_boxes_per_level = proposal_boxes_per_level[nms_indices]
+                scores_per_level = level_obj_logits[nms_indices]
+
+                proposals_per_fpn_level_per_image[level_name] = proposal_boxes_per_level
+                scores_per_fpn_level_per_image[level_name] = scores_per_level
                 ##############################################################
                 #                        END OF YOUR CODE                    #
                 ##############################################################
@@ -787,9 +931,21 @@ class FasterRCNN(nn.Module):
         ######################################################################
         # Fill this list. It is okay to use your implementation from
         # `FCOSPredictionNetwork` for this code block.
-        cls_pred = []
         # Replace "pass" statement with your code
-        pass
+        cls_pred = []
+        in_channels = self.backbone.out_channels
+        for i in range(1, len(stem_channels) + 1):
+            cls_pred.append(
+                nn.Conv2d(in_channels=in_channels, out_channels=stem_channels[i - 1], kernel_size=3, padding=1)
+            )
+            cls_pred.append(nn.ReLU())
+            in_channels = stem_channels[i - 1]
+        # Replace "pass" statement with your code
+
+        for layer in cls_pred:
+            if isinstance(layer, nn.Conv2d):
+                torch.nn.init.normal_(layer.weight.data, mean=0, std=0.01)
+                torch.nn.init.zeros_(layer.bias.data)
         ######################################################################
         # TODO: Add an `nn.Flatten` module to `cls_pred`, followed by a linear
         # layer to output C+1 classification logits (C classes + background).
@@ -797,7 +953,12 @@ class FasterRCNN(nn.Module):
         # shape from `nn.Flatten` layer.
         ######################################################################
         # Replace "pass" statement with your code
-        pass
+        cls_pred.append(
+            nn.Flatten(),
+        )
+        cls_pred.append(
+            nn.Linear(stem_channels[-1] * self.roi_size[0] * self.roi_size[1], num_classes + 1)
+        )
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -864,7 +1025,7 @@ class FasterRCNN(nn.Module):
             level_stride = self.backbone.fpn_strides[level_name]
 
             # Replace "pass" statement with your code
-            pass
+            roi_feats = torchvision.ops.roi_align(level_feats, level_props, output_size=self.roi_size, spatial_scale=1 / level_stride, aligned=True)
             ##################################################################
             #                         END OF YOUR CODE                       #
             ##################################################################
@@ -917,7 +1078,14 @@ class FasterRCNN(nn.Module):
             )
             gt_boxes_per_image = gt_boxes[_idx]
             # Replace "pass" statement with your code
-            pass
+            matched_gt_boxes.append(
+                rcnn_match_anchors_to_gt(
+                    proposals_per_image,
+                    gt_boxes_per_image,
+                    (0.5, 0.5)
+                )
+            )
+
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -943,9 +1111,15 @@ class FasterRCNN(nn.Module):
         #      this during inference, so that model predicts VOC IDs (0-19).
         ######################################################################
         # Feel free to delete this line: (but keep variable names same)
-        loss_cls = None
+        fg_idx, bg_idx = sample_rpn_training(matched_gt_boxes, num_images * self.batch_size_per_image, 0.25)
+        sampled_matched_gt_boxes = torch.cat((matched_gt_boxes[fg_idx][:,4], matched_gt_boxes[bg_idx][:,4]), dim=0)
+        sampled_matched_gt_boxes += 1
+        sampled_gt_one_hot = F.one_hot(sampled_matched_gt_boxes.long(), num_classes=self.num_classes+1).to(torch.float32)
+        
+        sampled_cls_logits = torch.cat((pred_cls_logits[fg_idx], pred_cls_logits[bg_idx]), dim=0)
+        loss_cls = F.cross_entropy(sampled_cls_logits, sampled_gt_one_hot)
         # Replace "pass" statement with your code
-        pass
+        
         ######################################################################
         #                           END OF YOUR CODE                         #
         ######################################################################
@@ -1014,9 +1188,14 @@ class FasterRCNN(nn.Module):
         # the classifier was supervised in `forward`). Remember to shift the
         # predicted IDs such that model outputs ID (0-19) for 20 VOC classes.
         ######################################################################
-        pred_scores, pred_classes = None, None
-        # Replace "pass" statement with your code
-        pass
+        pred_cls_softmax = F.softmax(pred_cls_logits, dim=1)
+        pred_scores, pred_classes = torch.max(pred_cls_softmax, dim=1)
+        pred_classes -= 1
+        
+        score_keep_mask = pred_scores > test_score_thresh
+        pred_boxes = pred_boxes[score_keep_mask]
+        pred_classes = pred_classes[score_keep_mask]
+        pred_scores = pred_scores[score_keep_mask]
         ######################################################################
         #                            END OF YOUR CODE                        #
         ######################################################################
