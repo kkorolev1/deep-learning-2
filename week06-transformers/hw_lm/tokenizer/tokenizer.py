@@ -1,6 +1,5 @@
 import sentencepiece as spm
 import os
-from glob import glob
 
 
 class Tokenizer:
@@ -8,9 +7,7 @@ class Tokenizer:
         self.model_prefix = os.path.splitext(model_path)[0]
         self.model_path = model_path
         self.processor = None
-
-        if os.path.exists(self.model_path):
-            self.processor = spm.SentencePieceProcessor(model_file=self.model_path)
+        self.load_processor()
 
     def train(self, input_file, vocab_size, model_type):
         spm.SentencePieceTrainer.train(
@@ -24,6 +21,10 @@ class Tokenizer:
             eos_id=3
         )
 
+    def load_processor(self):
+        if os.path.exists(self.model_path):
+            self.processor = spm.SentencePieceProcessor(model_file=self.model_path)
+
     def encode(self, text):
         if self.processor is None:
             self._throw_untrained_tokenizer()
@@ -36,10 +37,3 @@ class Tokenizer:
 
     def _throw_untrained_tokenizer(self):
         raise RuntimeError("Tokenizer is not trained yet")
-
-
-# Tokenizer().train(
-#     input_file=",".join(glob("txt_data/*.txt")),
-#     vocab_size=32000,
-#     model_type="bpe"
-# )
