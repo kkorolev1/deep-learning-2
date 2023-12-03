@@ -56,7 +56,7 @@
     "type": "OneCycleLR",
     "args": {
       "steps_per_epoch": 2500,
-      "epochs": 50,
+      "epochs": 51,
       "anneal_strategy": "cos",
       "max_lr": 1e-3,
       "pct_start": 0.2
@@ -78,7 +78,7 @@
     "early_stop": 100,
     "visualize": "wandb",
     "wandb_project": "lm_project",
-    "wandb_run_name": "one_batch_test",
+    "wandb_run_name": "huyalm",
     "len_epoch": 5000,
     "grad_norm_clip": 100,
     "grad_accum_iters": 2
