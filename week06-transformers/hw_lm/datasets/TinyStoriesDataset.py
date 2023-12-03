@@ -33,7 +33,7 @@ class TinyStoriesDataset:
 
     def __getitem__(self, index):
         return {
-            "input_ids": torch.tensor(self.story_list[index], dtype=torch.long)
+            "input_ids": torch.tensor(self.story_list[index], dtype=torch.int64)
         }
     
     def __len__(self):
