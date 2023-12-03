@@ -1,6 +1,7 @@
 import torch
 import math
 
+from torch.optim.lr_scheduler import OneCycleLR
 
 class ReduceLROnPlateau(torch.optim.lr_scheduler.ReduceLROnPlateau):
     def get_last_lr(self):

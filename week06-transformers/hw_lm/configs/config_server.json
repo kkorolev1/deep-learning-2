@@ -53,10 +53,13 @@
     }
   },
   "lr_scheduler": {
-    "type": "TransformerLrScheduler",
+    "type": "OneCycleLR",
     "args": {
-      "d_model": 512,
-      "warmup_steps": 10000
+      "steps_per_epoch": 2500,
+      "epochs": 50,
+      "anneal_strategy": "cos",
+      "max_lr": 1e-3,
+      "pct_start": 0.2
     }
   },
   "loss": {
