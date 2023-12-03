@@ -23,14 +23,14 @@ class Trainer(BaseTrainer):
             criterion,
             metrics,
             optimizer,
+            lr_scheduler,
             config,
             device,
             dataloaders,
-            lr_scheduler=None,
             len_epoch=None,
             skip_oom=True
     ):
-        super().__init__(model, criterion, metrics, optimizer, config, device)
+        super().__init__(model, criterion, metrics, optimizer, lr_scheduler, config, device)
         self.skip_oom = skip_oom
         self.config = config
         self.train_dataloader = dataloaders["train"]
@@ -42,7 +42,6 @@ class Trainer(BaseTrainer):
             self.train_dataloader = inf_loop(self.train_dataloader)
             self.len_epoch = len_epoch
         self.evaluation_dataloaders = {k: v for k, v in dataloaders.items() if k != "train"}
-        self.lr_scheduler = lr_scheduler
         self.log_step = 50
 
         self.train_metrics = MetricTracker(
@@ -51,54 +50,12 @@ class Trainer(BaseTrainer):
         self.evaluation_metrics = MetricTracker(
             "loss", *[m.name for m in self.metrics], writer=self.writer
         )
-        self.fine_tune = config["trainer"].get("fine_tune", False)
         self.grad_accum_iters = config["trainer"].get("grad_accum_iters", 1)
         self.eval_start_iter = config["trainer"].get("eval_start_iter", 0)
-        self.scheduler_config = config["trainer"].get("scheduler", None)
-        if self.scheduler_config is not None:
-            self.scheduler_config["requires_loss"] = self.scheduler_config.get("requires_loss", False)
-            self.scheduler_config["epoch_based"] = self.scheduler_config.get("epoch_based", False)
-
+        self.scaler = torch.cuda.amp.GradScaler()
+        
         if config.resume is not None:
             self._resume_checkpoint(config.resume)
-
-    def _resume_checkpoint(self, resume_path):
-        """
-        Resume from saved checkpoints
-
-        :param resume_path: Checkpoint path to be resumed
-        """
-        resume_path = str(resume_path)
-        self.logger.info("Loading checkpoint: {} ...".format(resume_path))
-        checkpoint = torch.load(resume_path, self.device)
-        self.start_epoch = checkpoint["epoch"] + 1
-        self.mnt_best = checkpoint["monitor_best"]
-
-        # load architecture params from checkpoint.
-        if checkpoint["config"]["arch"] != self.config["arch"]:
-            self.logger.warning(
-                "Warning: Architecture configuration given in config file is different from that "
-                "of checkpoint. This may yield an exception while state_dict is being loaded."
-            )
-        self.model.load_state_dict(checkpoint["state_dict"])
-
-        # load optimizer state from checkpoint only when optimizer type is not changed.
-        if (
-                checkpoint["config"]["optimizer"] != self.config["optimizer"] or
-                (self.lr_scheduler is not None and checkpoint["config"]["lr_scheduler"] != self.config["lr_scheduler"])
-        ):
-            self.logger.warning(
-                "Warning: Optimizer or lr_scheduler given in config file is different "
-                "from that of checkpoint. Optimizer parameters not being resumed."
-            )
-        elif not self.fine_tune:
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-
-        self.logger.info(
-            "Checkpoint loaded. Resume training from epoch {}".format(self.start_epoch)
-        )
 
     @staticmethod
     def move_batch_to_device(batch, device: torch.device):
@@ -152,11 +109,9 @@ class Trainer(BaseTrainer):
                         epoch, self._progress(batch_idx), batch["loss"].item()
                     )
                 )
-                if self.lr_scheduler is not None:
-                    self.writer.add_scalar(
-                        "learning rate", self.lr_scheduler.get_last_lr()[0]
-                    )
-                self._log_predictions(**batch, is_train=True)
+                self.writer.add_scalar(
+                    "learning rate", self.lr_scheduler.get_last_lr()[0]
+                )
                 self._log_scalars(self.train_metrics)
                 # we don't want to reset train metrics at the start of every epoch
                 # because we are interested in recent train metrics
@@ -171,33 +126,27 @@ class Trainer(BaseTrainer):
                 val_log = self._evaluation_epoch(epoch, part, dataloader)
                 log.update(**{f"{part}_{name}": value for name, value in val_log.items()})
 
-        if self.lr_scheduler is not None and self.scheduler_config is not None and self.scheduler_config["epoch_based"]:
-            if self.scheduler_config["requires_loss"]:
-                if "val_loss" in log:
-                    self.lr_scheduler.step(log["val_loss"])
-            else:
-                self.lr_scheduler.step()
-
         return log
 
     def process_batch(self, batch, batch_idx, is_train: bool, metrics: MetricTracker):
         batch = self.move_batch_to_device(batch, self.device)
-        outputs = self.model(**batch)
-        batch.update(outputs)
-        batch["loss"] = self.criterion(**batch) / self.grad_accum_iters
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+            outputs = self.model(**batch)
+            batch.update(outputs)
+            batch["loss"] = self.criterion(**batch) / self.grad_accum_iters
         if is_train:
-            batch["loss"].backward()
+            self.scaler.scale(batch["loss"]).backward()
             if (batch_idx + 1) % self.grad_accum_iters == 0 or (batch_idx + 1) == self.len_epoch:
                 self._clip_grad_norm()
-                self.optimizer.step()
-                if self.lr_scheduler is not None and self.scheduler_config is not None and not self.scheduler_config["epoch_based"]:
-                    self.lr_scheduler.step()
+                self.scaler.step(self.optimizer)
+                self.lr_scheduler.step()
                 self.train_metrics.update("grad norm", self.get_grad_norm())
+                self.scaler.update()
                 self.optimizer.zero_grad()
 
         metrics.update("loss", batch["loss"].item())
         for met in self.metrics:
-            metrics.update(met.name, met(**batch), n=batch["mix"].shape[0])
+            metrics.update(met.name, met(**batch))
         return batch
 
     def _evaluation_epoch(self, epoch, part, dataloader):
@@ -223,7 +172,7 @@ class Trainer(BaseTrainer):
                 )
             self.writer.set_step(epoch * self.len_epoch, part)
             self._log_scalars(self.evaluation_metrics)
-            self._log_predictions(**batch, is_train=False)
+            self._log_predictions(tokenizer=dataloader.dataset.tokenizer)
 
         # add histogram of model parameters to the tensorboard
         #for name, p in self.model.named_parameters():
@@ -242,12 +191,35 @@ class Trainer(BaseTrainer):
 
     def _log_predictions(
             self,
-            examples_to_log=10,
+            examples_to_log=5,
+            tokenizer=None,
             *args,
-            **kwargs,
+            **kwargs
     ):
-        if self.writer is None:
+        if self.writer is None or tokenizer is None:
             return
+
+        rows = {}
+        max_length = 50
+        for i in range(examples_to_log):
+            argmax_text = self.model.inference(
+                "", tokenizer, self.device, max_length=max_length, mode="argmax"
+            )
+            nucleus_t1_text = self.model.inference(
+                "", tokenizer, self.device, max_length=max_length, temperature=1, mode="nucleus"
+            )
+            nucleus_t10_text = self.model.inference(
+                "", tokenizer, self.device, max_length=max_length, temperature=10, mode="nucleus"
+            )
+            rows[i] = {
+                "argmax": "".join(argmax_text),
+                "nucleus t=1": "".join(nucleus_t1_text),
+                "nucleus t=10": "".join(nucleus_t10_text)
+            }
+            
+        self.writer.add_table("predictions", pd.DataFrame.from_dict(rows, orient="index"))
+
+
 
     @torch.no_grad()
     def get_grad_norm(self, norm_type=2):

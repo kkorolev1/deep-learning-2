@@ -185,6 +185,11 @@ def _set_by_path(tree, keys, value):
     _get_by_path(tree, keys[:-1])[keys[-1]] = value
 
 
+def cool_getitem(a, b):
+    if b[0] == "[" and b[-1] == "]":
+        return a[int(b[1:-1])]
+    return a[b]
+
 def _get_by_path(tree, keys):
     """Access a nested object in tree by sequence of keys."""
-    return reduce(getitem, keys, tree)
+    return reduce(cool_getitem, keys, tree)

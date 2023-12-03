@@ -4,22 +4,42 @@
   "arch": {
     "type": "HuYaLM",
     "args": {
-      "vocab_size": 32000,
-      "d_model": 512,
-      "nhead": 8,
-      "num_layers": 6
+      "vocab_size": 5000,
+      "embed_dim": 512,
+      "feedforward_dim": 2048,
+      "num_heads": 8,
+      "num_layers": 8,
+      "max_len": 320
     }
+  },
+  "dataset": {
+    "padding_mode": "truncate",
+    "seq_len": 256,
+    "data_dir": "TinyStoriesTokenized",
+    "tokenizer_model_path": "lm.model",
+    "val_size": 0.01
   },
   "data": {
     "train": {
-      "batch_size": 3,
+      "batch_size": 256,
       "num_workers": 5,
       "datasets": [
         {
           "type": "TinyStoriesDataset",
           "args": {
-            "data_dir": "tokenized_data",
-            "tokenizer_model_path": "lm.model"
+            "is_test": false
+          }
+        }
+      ]
+    },
+    "val": {
+      "batch_size": 256,
+      "num_workers": 5,
+      "datasets": [
+        {
+          "type": "TinyStoriesDataset",
+          "args": {
+            "is_test": true
           }
         }
       ]
@@ -28,7 +48,15 @@
   "optimizer": {
     "type": "AdamW",
     "args": {
-      "lr": 3e-4
+      "lr": 1e-3,
+      "weight_decay": 1e-5
+    }
+  },
+  "lr_scheduler": {
+    "type": "TransformerLrScheduler",
+    "args": {
+      "d_model": 512,
+      "warmup_steps": 10000
     }
   },
   "loss": {
@@ -37,10 +65,9 @@
       "pad_id": 0
     }
   },
-  "metrics": [
-  ],
+  "metrics": [],
   "trainer": {
-    "epochs": 40,
+    "epochs": 50,
     "save_dir": "saved/",
     "save_period": 5,
     "verbosity": 2,
@@ -49,7 +76,8 @@
     "visualize": "wandb",
     "wandb_project": "lm_project",
     "wandb_run_name": "one_batch_test",
-    "len_epoch": 1,
-    "grad_norm_clip": 100
+    "len_epoch": 5000,
+    "grad_norm_clip": 100,
+    "grad_accum_iters": 2
   }
 }

@@ -12,7 +12,7 @@ class BaseTrainer:
     Base class for all trainers
     """
 
-    def __init__(self, model: BaseModel, criterion, metrics, optimizer, config, device):
+    def __init__(self, model: BaseModel, criterion, metrics, optimizer, lr_scheduler, config, device):
         self.device = device
         self.config = config
         self.logger = config.get_logger("trainer", config["trainer"]["verbosity"])
@@ -21,6 +21,7 @@ class BaseTrainer:
         self.criterion = criterion
         self.metrics = metrics
         self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
 
         # for interrupt saving
         self._last_epoch = 0
@@ -29,6 +30,8 @@ class BaseTrainer:
         self.epochs = cfg_trainer["epochs"]
         self.save_period = cfg_trainer["save_period"]
         self.monitor = cfg_trainer.get("monitor", "off")
+        self.reset_optimizer = cfg_trainer.get("reset_optimizer", False)
+        self.reset_scheduler = cfg_trainer.get("reset_scheduler", False)
 
         # configuration to monitor model performance and save best
         if self.monitor == "off":
@@ -139,11 +142,10 @@ class BaseTrainer:
             "epoch": epoch,
             "state_dict": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
+            "lr_scheduler": self.lr_scheduler.state_dict(),
             "monitor_best": self.mnt_best,
             "config": self.config,
         }
-        if self.lr_scheduler is not None:
-            state.update({'lr_scheduler': self.lr_scheduler.state_dict()})
         filename = str(self.checkpoint_dir / "checkpoint-epoch{}.pth".format(epoch))
         if not (only_best and save_best):
             torch.save(state, filename)
@@ -152,3 +154,35 @@ class BaseTrainer:
             best_path = str(self.checkpoint_dir / "model_best.pth")
             torch.save(state, best_path)
             self.logger.info("Saving current best: model_best.pth ...")
+
+    def _resume_checkpoint(self, resume_path):
+        """
+        Resume from saved checkpoints
+
+        :param resume_path: Checkpoint path to be resumed
+        """
+        resume_path = str(resume_path)
+        self.logger.info("Loading checkpoint: {} ...".format(resume_path))
+        checkpoint = torch.load(resume_path, self.device)
+        self.start_epoch = checkpoint["epoch"] + 1
+        self.mnt_best = checkpoint["monitor_best"]
+
+        # load architecture params from checkpoint.
+        if checkpoint["config"]["arch"] != self.config["arch"]:
+            self.logger.warning(
+                "Warning: Architecture configuration given in config file is different from that "
+                "of checkpoint. This may yield an exception while state_dict is being loaded."
+            )
+        self.model.load_state_dict(checkpoint["state_dict"])
+
+        # load optimizer state from checkpoint only when optimizer type is not changed.
+        if not self.reset_optimizer:
+            self.logger.info("Loaded optimizer state")
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if not self.reset_scheduler:
+            self.logger.info("Loaded scheduler state")
+            self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+
+        self.logger.info(
+            "Checkpoint loaded. Resume training from epoch {}".format(self.start_epoch)
+        )

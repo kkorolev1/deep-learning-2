@@ -1,66 +1,82 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 import numpy as np
 
-
-class PositionalEncoding(nn.Module):
-
-    def __init__(self, d_model, max_len: int = 5000):
-        """
-        Inputs
-            embed_dim - Hidden dimensionality of the input.
-            max_len - Maximum length of a sequence to expect.
-        """
-        super().__init__()
-        seq_pos = torch.arange(0, max_len, dtype=torch.float)
-        embed_pos = torch.exp(-torch.arange(0, d_model, 2, dtype=torch.float) / d_model * math.log(10000))
-        arg = torch.outer(seq_pos, embed_pos)
-        
-        pe = torch.zeros((1, max_len, d_model), dtype=torch.float) # here should be a tensor of size (1, max_len, embed_dim), dummy dimension is needed for proper addition
-        pe[..., 0::2] = torch.sin(arg)
-        pe[..., 1::2] = torch.cos(arg)
-        
-        # register_buffer => Tensor which is not a parameter, but should be part of the modules state.
-        # Used for tensors that need to be on the same device as the module.
-        # persistent=False tells PyTorch to not add the buffer to the state dict (e.g. when we save the model)
-        self.register_buffer('pe', pe, persistent=False)
-
-    def forward(self, x):
-        return x + self.pe[:, :x.shape[1], :]
-
-
-class TokenEmbedding(nn.Module):
-    def __init__(self, vocab_size, d_model):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.d_model = d_model
-
-    def forward(self, x):
-        return self.embedding(x) * math.sqrt(self.d_model)
-
+from hw_lm.model.HuYaLM.utils import PositionalEncoding, TokenEmbedding
+from hw_lm.model.HuYaLM.decoder import DecoderLayer
 
 class HuYaLM(nn.Module):
-    def __init__(self, vocab_size, d_model, nhead, num_layers, max_len=5000):
+    def __init__(self,
+                 embed_dim,
+                 num_heads,
+                 feedforward_dim,
+                 num_layers,
+                 vocab_size,
+                 dropout=0.1,
+                 attn_use_prelayer_norm=True,
+                 activation=nn.GELU,
+                 max_len=320):
         super().__init__()
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
-        self.pos_encoding = PositionalEncoding(d_model, max_len)
-        self.embedding = TokenEmbedding(vocab_size, d_model)
-        self.model = nn.TransformerEncoder(encoder_layer, num_layers)
-        self.head = nn.Linear(d_model, vocab_size)
+        self.pos_encoding = PositionalEncoding(embed_dim, max_len)
+        self.embedding = TokenEmbedding(vocab_size, embed_dim)
+        self.decoder_layers = nn.ModuleList([
+            DecoderLayer(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                feedforward_dim=feedforward_dim,
+                activation=activation,
+                dropout=dropout,
+                attn_use_prelayer_norm=attn_use_prelayer_norm
+            )
+            for _ in range(num_layers)
+        ])
+        self.head = nn.Linear(embed_dim, vocab_size)
 
     def forward(self, input_ids, padding_mask, **args):
-        mask = nn.Transformer.generate_square_subsequent_mask(input_ids.shape[1], device=input_ids.device)
-        src = self.pos_encoding(self.embedding(input_ids))
-        seq = self.model(
-            src=src,
-            mask=mask,
-            src_key_padding_mask=padding_mask,
-            is_causal=True
-        )
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(input_ids.shape[1], device=input_ids.device)
+        x = self.pos_encoding(self.embedding(input_ids))
+        for decoder_layer in self.decoder_layers:
+            x = decoder_layer(x, padding_mask=padding_mask, causal_mask=causal_mask)
+        logits = self.head(x)
         return {
-            "logits": self.head(seq)
+            "logits": logits
         }
+    
+    def _get_next_token_argmax(self, logits):
+        return logits.argmax(dim=-1).unsqueeze(0)
+    
+    def _get_next_token_nucleus(self, probas, p=0.9):
+        sorted_probas, indices = torch.sort(probas, dim=-1, descending=True)
+        cum_sum_probas = torch.cumsum(sorted_probas, dim=-1)
+        nucleus = cum_sum_probas < p
+        nucleus = torch.cat([nucleus.new_ones(nucleus.shape[:-1] + (1,)), nucleus[..., :-1]], dim=-1)
+        sorted_probas[~nucleus] = 0.0
+        sorted_probas /= sorted_probas.sum()
+        dist = torch.distributions.Categorical(probs=sorted_probas.squeeze(0))
+        next_token_id = dist.sample().item()
+        return indices[:, next_token_id].unsqueeze(0)
+        
+    @torch.no_grad()
+    def inference(self, text, tokenizer, device, max_length, temperature=1, mode="argmax", p=0.9):
+        input_ids = torch.tensor(
+            [tokenizer.processor.bos_id()] + tokenizer.encode(text),
+        device=device).unsqueeze(0)
+        
+        for i in range(max_length):
+            padding_mask = torch.zeros_like(input_ids, dtype=bool, device=device)
+            logits = self.forward(input_ids, padding_mask)["logits"][:, -1, :]
+            if mode == "argmax":
+                next_token_id = self._get_next_token_argmax(logits)
+            elif mode == "nucleus":
+                probas = F.softmax(logits, dim=-1) ** temperature
+                probas /= probas.sum()
+                next_token_id = self._get_next_token_nucleus(probas, p=p)
+            input_ids = torch.cat((input_ids, next_token_id), dim=1)
+            if next_token_id.item() == tokenizer.processor.eos_id():
+                    break
+        return tokenizer.decode(input_ids.tolist())
     
     def __str__(self):
         """

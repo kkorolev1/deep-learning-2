@@ -45,7 +45,7 @@ if __name__ == "__main__":
     args.add_argument(
         "-v",
         "--vocab-size",
-        default=32000,
+        default=5000,
         type=int,
         help="Vocab size for tokenizer",
     )
