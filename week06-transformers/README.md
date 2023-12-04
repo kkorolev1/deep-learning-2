@@ -1,6 +1,8 @@
 # Big homework 1. BLMs (Boutique LMs)
 
-Language Model for writing stories trained on TinyStories dataset
+Language Model for writing stories trained on TinyStories dataset.
+
+[Wandb report](https://wandb.ai/kkorolev/lm_project/reports/BHW1--Vmlldzo2MTU2MzY4) describes the pipeline in details.
 
 ## Installation guide
 
