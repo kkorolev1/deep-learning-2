@@ -4,6 +4,8 @@ Language Model for writing stories trained on TinyStories dataset.
 
 [Wandb report](https://wandb.ai/kkorolev/lm_project/reports/BHW1--Vmlldzo2MTU2MzY4) describes the pipeline in details.
 
+[Model checkpoint](https://disk.yandex.ru/d/CoYoDi9t0atX3A)
+
 ## Installation guide
 
 ```shell
