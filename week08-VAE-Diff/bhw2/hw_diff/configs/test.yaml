@@ -1,0 +1,21 @@
+name: "test"
+n_gpu: 1
+
+batch_size: 16
+beta_schedule: "linear"
+T: 1000
+eval_shape: [3, 64, 64]
+checkpoint: ddpm_checkpoint.pth
+output_path: cats.png
+arch:
+  _target_: hw_diff.model.Unet
+  dim: 96
+  dim_mults: [1, 2, 4, 4]
+  channels: 3
+  flash_attn: true
+
+dataset:
+  _target_: hw_diff.datasets.ImagesDataset
+  root: data/cats/cats
+  train: false
+  limit: 64
