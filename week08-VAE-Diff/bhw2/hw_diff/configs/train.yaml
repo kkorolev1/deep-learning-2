@@ -1,0 +1,55 @@
+name: "train"
+n_gpu: 1
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 2e-4
+  weight_decay: 1e-2
+
+batch_size: 16
+
+beta_schedule: "linear"
+T: 1000
+eval_shape: [8, 3, 64, 64]
+
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.ConstantLR
+  factor: 1
+
+arch:
+  _target_: hw_diff.model.Unet
+  dim: 64
+  dim_mults: [1, 2, 4, 4]
+  channels: 3
+  flash_attn: true
+
+data:
+  train:
+    batch_size: ${batch_size}
+    num_workers: 5
+    datasets:
+      - _target_: hw_diff.datasets.ImagesDataset
+        root: data/cats/cats
+
+loss:
+  _target_: torch.nn.MSELoss
+
+metrics: []
+
+trainer: 
+  epochs: 20
+  save_dir: "saved/"
+  save_period: 5
+  verbosity: 2
+  monitor: "off"
+  early_stop: 100
+  visualize: "wandb"
+  wandb_project: "duffusion_project"
+  wandb_run_name: "cats_test"
+  len_epoch: 2000
+  grad_norm_clip: 100
+
+  wandb_key: 91898ab676432e8d5689a2ce4a88f7131dc1e45c
+
+  ema_update_every: 10
+  ema_decay: 0.995
